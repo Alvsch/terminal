@@ -1,36 +1,65 @@
-use std::fmt::{Display, Formatter};
-use crossterm::style::Color;
+use std::io::stdout;
+use crossterm::cursor::MoveToColumn;
+use crossterm::execute;
+use crossterm::style::{Color, Print, ResetColor, SetForegroundColor};
+use crossterm::terminal::{Clear, ClearType};
+use log::{Level, LevelFilter, Metadata, Record, SetLoggerError};
+use crate::block_on;
+use crate::terminal::TERMINAL;
 
-#[derive(PartialOrd, PartialEq)]
-pub enum Level {
-    Error = 50,
-    Warning = 30,
-    Info = 10,
-    Debug = 5,
-    Trace = 0,
+static LOGGER: Logger = Logger;
+
+pub fn init(level: LevelFilter) -> Result<(), SetLoggerError> {
+    log::set_logger(&LOGGER)
+        .map(|_| log::set_max_level(level))
 }
 
-impl Display for Level {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let name = match self {
-            Level::Error => "ERROR",
-            Level::Warning => "WARNING",
-            Level::Info => "INFO",
-            Level::Debug => "DEBUG",
-            Level::Trace => "TRACE",
-        };
-        write!(f, "{}", name)
+
+struct Logger;
+
+impl log::Log for Logger {
+    fn enabled(&self, metadata: &Metadata) -> bool {
+        metadata.level() <= Level::Info
     }
-}
 
-impl Level {
-    pub fn get_color(&self) -> Color {
-        match self {
+    fn log(&self, record: &Record) {
+        if !self.enabled(record.metadata()) {
+            return;
+        }
+
+        let message = format!(
+            "[{}] {}",
+            record.level(), record.args()
+        );
+        let input = block_on(async {
+            let terminal = TERMINAL.read().await;
+
+            format!(
+                "\n> {}",
+                terminal.input
+            )
+        });
+
+        let color = match record.level() {
             Level::Error => Color::Red,
-            Level::Warning => Color::Yellow,
+            Level::Warn => Color::Yellow,
             Level::Info => Color::Reset,
             Level::Debug => Color::Reset,
             Level::Trace => Color::Reset,
-        }
+        };
+
+        execute!(
+            stdout(),
+            MoveToColumn(0),
+            Clear(ClearType::CurrentLine),
+
+            SetForegroundColor(color),
+            Print(message),
+            ResetColor,
+
+            Print(input),
+        ).unwrap();
     }
+
+    fn flush(&self) {}
 }

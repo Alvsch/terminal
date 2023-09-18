@@ -1,25 +1,53 @@
 use std::io::{stdout};
-use std::ops::AddAssign;
-use std::sync::Mutex;
-use crossterm::cursor::{MoveLeft, MoveToColumn};
-use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind};
+use std::process::exit;
+use crossterm::cursor::{MoveLeft};
+use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
-use crossterm::style::{Color, Print, ResetColor, SetForegroundColor};
+use crossterm::style::{Print};
 use crossterm::terminal::{Clear, ClearType, enable_raw_mode};
 use futures::{future::FutureExt, select, StreamExt};
+use log::{info, Level, LevelFilter, warn};
 use once_cell::sync::Lazy;
 use tokio::io;
 use tokio::sync::RwLock;
+use crate::block_on;
+use crate::command::Command;
 use crate::command_dispatcher::CommandDispatcher;
-use crate::log::Level;
-
-pub static TIMES: Mutex<i32> = Mutex::new(0);
+use crate::log::init;
 
 pub static TERMINAL: Lazy<RwLock<Terminal>> = Lazy::new(|| {
     let terminal = RwLock::new(Terminal::new(Level::Info));
+    init(LevelFilter::Info).unwrap();
 
-    let mut lock = TIMES.lock().unwrap();
-    lock.add_assign(1);
+    block_on(async {
+        let mut lock = terminal.write().await;
+
+        lock.dispatcher.add_command(Command::new(
+            "help".into(),
+            Some("Command for help".into()),
+            Some("How do you fail to use the help command".into()),
+            |_| {
+                let lock = block_on(async {
+                    TERMINAL.read().await
+                });
+
+                let mut message = String::from("Help message:");
+                for command in lock.dispatcher.get_command_names() {
+                    let name = command.get_name();
+                    let description = command.get_description().unwrap_or("".into());
+
+                    message.push_str(format!(
+                        "\n       {name} - {description}"
+                    ).as_str());
+                }
+
+                info!("{}", message.as_str());
+
+                true
+            },
+        ));
+
+    });
 
     // Start terminal event listener
     tokio::spawn(Terminal::event_listener());
@@ -33,7 +61,7 @@ pub static TERMINAL: Lazy<RwLock<Terminal>> = Lazy::new(|| {
 });
 
 pub struct Terminal {
-    input: String,
+    pub(crate) input: String,
     pub level: Level,
     pub dispatcher: CommandDispatcher,
 }
@@ -49,38 +77,13 @@ impl Terminal {
         }
     }
 
-    pub fn log(&self, level: Level, message: &str) {
-        if self.level > level {
-            return;
-        }
-
-        let message = format!(
-            "[{}] {}",
-            level, message
-        );
-
-        let input = format!(
-            "\n> {}",
-            self.input
-        );
-
-        execute!(
-            stdout(),
-            MoveToColumn(0),
-            Clear(ClearType::CurrentLine),
-
-            SetForegroundColor(level.get_color()),
-            Print(message),
-            ResetColor,
-
-            Print(input),
-        ).unwrap();
-
-    }
-
     async fn handle_event(event: KeyEvent) -> io::Result<()> {
         if event.kind != KeyEventKind::Press {
             return Ok(());
+        }
+
+        if event.modifiers == KeyModifiers::CONTROL && event.code == KeyCode::Char('c') {
+            exit(-1073741510);
         }
 
         let mut terminal = TERMINAL.write().await;
@@ -110,10 +113,14 @@ impl Terminal {
                     Print("\n> "),
                 )?;
 
+                if terminal.input.is_empty() {
+                    return Ok(());
+                }
+
                 let (name, args) = terminal.prepare_command().await;
                 let command = terminal.dispatcher.get_command(&name).cloned();
                 if command.is_none() {
-                    terminal.log(Level::Warning, "Command not found!");
+                    warn!("Command not found!");
                     return Ok(());
                 }
                 let command = command.unwrap();
@@ -122,11 +129,9 @@ impl Terminal {
 
                 let success = command.execute(args);
 
-                let terminal = TERMINAL.write().await;
-
                 let usage = command.get_usage();
                 if !success && usage.is_some() {
-                    terminal.log(Level::Warning,  usage.unwrap().as_str());
+                    warn!("{}", usage.unwrap().as_str());
                 }
 
             },

@@ -12,6 +12,10 @@ impl CommandDispatcher {
         }
     }
 
+    pub(crate) fn get_command_names(&self) -> Vec<&Command> {
+        self.commands.values().collect()
+    }
+
     pub fn get_command(&self, name: &String) -> Option<&Command> {
         self.commands.get(name)
     }
@@ -19,5 +23,6 @@ impl CommandDispatcher {
     pub fn add_command(&mut self, command: Command) {
         self.commands.insert(command.get_name(), command);
     }
+
 
 }
