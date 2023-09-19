@@ -1,23 +1,25 @@
 use crate::block_on;
 use crate::command::Command;
 use crate::command_dispatcher::CommandDispatcher;
-use crate::log::init;
-use crossterm::cursor::{MoveLeft, MoveToColumn};
+use crossterm::cursor::{MoveLeft, MoveRight, MoveToColumn, position};
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::style::Print;
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType};
 use futures::{future::FutureExt, select, StreamExt};
-use log::{info, warn, Level, LevelFilter};
+use log::{info, warn};
 use once_cell::sync::Lazy;
 use std::io::stdout;
 use std::process::exit;
 use tokio::io;
 use tokio::sync::RwLock;
 
+pub(crate) static INPUT: Lazy<RwLock<String>> = Lazy::new(|| {
+    RwLock::new(String::new())
+});
+
 pub static TERMINAL: Lazy<RwLock<Terminal>> = Lazy::new(|| {
-    let terminal = RwLock::new(Terminal::new(Level::Info));
-    init(LevelFilter::Trace).unwrap();
+    let terminal = RwLock::new(Terminal::new());
 
     block_on(async {
         let mut lock = terminal.write().await;
@@ -47,24 +49,23 @@ pub static TERMINAL: Lazy<RwLock<Terminal>> = Lazy::new(|| {
     // Start terminal event listener
     tokio::spawn(Terminal::event_listener());
     // Prepare terminal text
-    execute!(stdout(), Print("> ")).unwrap();
+    execute!(
+        stdout(),
+        Print("> "),
+    ).unwrap();
 
     terminal
 });
 
 pub struct Terminal {
-    pub(crate) input: String,
-    pub level: Level,
     pub dispatcher: CommandDispatcher,
 }
 
 impl Terminal {
-    fn new(level: Level) -> Self {
+    fn new() -> Self {
         enable_raw_mode().unwrap();
 
         Self {
-            input: String::new(),
-            level,
             dispatcher: CommandDispatcher::new(),
         }
     }
@@ -79,30 +80,30 @@ impl Terminal {
             exit(-1073741510);
         }
 
-        let mut terminal = TERMINAL.write().await;
+        let mut input = INPUT.write().await;
         match event.code {
             KeyCode::Backspace => {
-                if terminal.input.is_empty() {
+                if input.is_empty() {
                     return Ok(());
                 }
 
                 execute!(stdout(), MoveLeft(1), Clear(ClearType::UntilNewLine),)?;
-                terminal.input.pop();
+                input.pop();
             }
             KeyCode::Char(char) => {
                 execute!(stdout(), Print(char),)?;
-                terminal.input.push(char);
+                input.push(char);
             }
             KeyCode::Enter => {
                 execute!(stdout(), Print("\n"), MoveToColumn(0), Print("> "),)?;
 
-                if terminal.input.is_empty() {
+                if input.is_empty() {
                     return Ok(());
                 }
+                drop(input);
 
-                let (name, args) = terminal.prepare_command().await;
-                let command = terminal.dispatcher.get_command(&name).cloned();
-                drop(terminal);
+                let terminal = TERMINAL.read().await;
+                let (command, args) = terminal.prepare_command().await;
 
                 if command.is_none() {
                     warn!("Command not found!");
@@ -122,15 +123,19 @@ impl Terminal {
         Ok(())
     }
 
-    async fn prepare_command(&mut self) -> (String, Vec<String>) {
-        let input = self.input.clone();
-        self.input.clear();
+    async fn prepare_command(&self) -> (Option<Command>, Vec<String>) {
+        let mut lock = INPUT.write().await;
 
-        let mut args: Vec<String> = input.split_whitespace().map(|s| s.to_string()).collect();
+        let cloned_input = lock.clone();
+        lock.clear();
+
+        let mut args: Vec<String> = cloned_input.split_whitespace().map(|s| s.to_string()).collect();
 
         let name: String = args.remove(0);
 
-        (name, args)
+        let command = self.dispatcher.get_command(&name).cloned();
+
+        (command, args)
     }
 
     async fn event_listener() -> io::Result<()> {
