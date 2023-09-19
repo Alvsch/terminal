@@ -1,23 +1,23 @@
-use std::io::{stdout};
-use std::process::exit;
-use crossterm::cursor::{MoveLeft};
-use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use crossterm::execute;
-use crossterm::style::{Print};
-use crossterm::terminal::{Clear, ClearType, enable_raw_mode};
-use futures::{future::FutureExt, select, StreamExt};
-use log::{info, Level, LevelFilter, warn};
-use once_cell::sync::Lazy;
-use tokio::io;
-use tokio::sync::RwLock;
 use crate::block_on;
 use crate::command::Command;
 use crate::command_dispatcher::CommandDispatcher;
 use crate::log::init;
+use crossterm::cursor::{MoveLeft, MoveToColumn};
+use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::execute;
+use crossterm::style::Print;
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType};
+use futures::{future::FutureExt, select, StreamExt};
+use log::{info, warn, Level, LevelFilter};
+use once_cell::sync::Lazy;
+use std::io::stdout;
+use std::process::exit;
+use tokio::io;
+use tokio::sync::RwLock;
 
 pub static TERMINAL: Lazy<RwLock<Terminal>> = Lazy::new(|| {
     let terminal = RwLock::new(Terminal::new(Level::Info));
-    init(LevelFilter::Info).unwrap();
+    init(LevelFilter::Trace).unwrap();
 
     block_on(async {
         let mut lock = terminal.write().await;
@@ -27,18 +27,14 @@ pub static TERMINAL: Lazy<RwLock<Terminal>> = Lazy::new(|| {
             Some("Command for help".into()),
             Some("How do you fail to use the help command".into()),
             |_| {
-                let lock = block_on(async {
-                    TERMINAL.read().await
-                });
+                let lock = block_on(async { TERMINAL.read().await });
 
                 let mut message = String::from("Help message:");
                 for command in lock.dispatcher.get_command_names() {
                     let name = command.get_name();
                     let description = command.get_description().unwrap_or("".into());
 
-                    message.push_str(format!(
-                        "\n       {name} - {description}"
-                    ).as_str());
+                    message.push_str(format!("\n       {name} - {description}").as_str());
                 }
 
                 info!("{}", message.as_str());
@@ -46,16 +42,12 @@ pub static TERMINAL: Lazy<RwLock<Terminal>> = Lazy::new(|| {
                 true
             },
         ));
-
     });
 
     // Start terminal event listener
     tokio::spawn(Terminal::event_listener());
     // Prepare terminal text
-    execute!(
-        stdout(),
-        Print("> ")
-    ).unwrap();
+    execute!(stdout(), Print("> ")).unwrap();
 
     terminal
 });
@@ -83,6 +75,7 @@ impl Terminal {
         }
 
         if event.modifiers == KeyModifiers::CONTROL && event.code == KeyCode::Char('c') {
+            disable_raw_mode().unwrap();
             exit(-1073741510);
         }
 
@@ -93,25 +86,15 @@ impl Terminal {
                     return Ok(());
                 }
 
-                execute!(
-                    stdout(),
-                    MoveLeft(1),
-                    Clear(ClearType::UntilNewLine),
-                )?;
+                execute!(stdout(), MoveLeft(1), Clear(ClearType::UntilNewLine),)?;
                 terminal.input.pop();
-            },
+            }
             KeyCode::Char(char) => {
-                execute!(
-                    stdout(),
-                    Print(char),
-                )?;
+                execute!(stdout(), Print(char),)?;
                 terminal.input.push(char);
-            },
+            }
             KeyCode::Enter => {
-                execute!(
-                    stdout(),
-                    Print("\n> "),
-                )?;
+                execute!(stdout(), Print("\n"), MoveToColumn(0), Print("> "),)?;
 
                 if terminal.input.is_empty() {
                     return Ok(());
@@ -119,13 +102,13 @@ impl Terminal {
 
                 let (name, args) = terminal.prepare_command().await;
                 let command = terminal.dispatcher.get_command(&name).cloned();
+                drop(terminal);
+
                 if command.is_none() {
                     warn!("Command not found!");
                     return Ok(());
                 }
                 let command = command.unwrap();
-
-                drop(terminal);
 
                 let success = command.execute(args);
 
@@ -133,9 +116,8 @@ impl Terminal {
                 if !success && usage.is_some() {
                     warn!("{}", usage.unwrap().as_str());
                 }
-
-            },
-            _ => {},
+            }
+            _ => {}
         };
         Ok(())
     }
@@ -144,10 +126,7 @@ impl Terminal {
         let input = self.input.clone();
         self.input.clear();
 
-        let mut args: Vec<String> = input
-            .split_whitespace()
-            .map(|s| s.to_string())
-            .collect();
+        let mut args: Vec<String> = input.split_whitespace().map(|s| s.to_string()).collect();
 
         let name: String = args.remove(0);
 
@@ -177,4 +156,3 @@ impl Terminal {
         Ok(())
     }
 }
-

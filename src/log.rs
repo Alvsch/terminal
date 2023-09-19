@@ -1,25 +1,23 @@
-use std::io::stdout;
+use crate::block_on;
+use crate::terminal::TERMINAL;
 use crossterm::cursor::MoveToColumn;
 use crossterm::execute;
 use crossterm::style::{Color, Print, ResetColor, SetForegroundColor};
 use crossterm::terminal::{Clear, ClearType};
 use log::{Level, LevelFilter, Metadata, Record, SetLoggerError};
-use crate::block_on;
-use crate::terminal::TERMINAL;
-
-static LOGGER: Logger = Logger;
+use std::io::stdout;
 
 pub fn init(level: LevelFilter) -> Result<(), SetLoggerError> {
-    log::set_logger(&LOGGER)
-        .map(|_| log::set_max_level(level))
+    log::set_boxed_logger(Box::new(Logger { level })).map(|_| log::set_max_level(level))
 }
 
-
-struct Logger;
+struct Logger {
+    level: LevelFilter,
+}
 
 impl log::Log for Logger {
     fn enabled(&self, metadata: &Metadata) -> bool {
-        metadata.level() <= Level::Info
+        metadata.level() <= self.level
     }
 
     fn log(&self, record: &Record) {
@@ -27,17 +25,11 @@ impl log::Log for Logger {
             return;
         }
 
-        let message = format!(
-            "[{}] {}",
-            record.level(), record.args()
-        );
+        let message = format!("[{}] {}", record.level(), record.args());
         let input = block_on(async {
             let terminal = TERMINAL.read().await;
 
-            format!(
-                "\n> {}",
-                terminal.input
-            )
+            format!("> {}", terminal.input)
         });
 
         let color = match record.level() {
@@ -52,13 +44,14 @@ impl log::Log for Logger {
             stdout(),
             MoveToColumn(0),
             Clear(ClearType::CurrentLine),
-
             SetForegroundColor(color),
             Print(message),
             ResetColor,
-
+            Print("\n"),
+            MoveToColumn(0),
             Print(input),
-        ).unwrap();
+        )
+        .unwrap();
     }
 
     fn flush(&self) {}
